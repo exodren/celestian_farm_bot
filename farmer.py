@@ -5,10 +5,14 @@ import os
 import json
 import random
 from datetime import datetime, timedelta
+import pyrogram.utils
 from pyrogram import Client
 from pyrogram.enums import ChatAction
 from pyrogram.errors import FloodWait, RPCError
 import config
+
+# Патч для поддержки 64-битных ID супергрупп и каналов в Telegram (ID > 2147483647)
+pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
 
 # ─── Настройки рандомизации задержки (защита от детекта бота) ────────────────
 RANDOM_DELAY_MIN = 30.0        # от 30 секунд
@@ -334,7 +338,23 @@ async def main():
     logger.info("Авторизация успешна!")
 
     try:
-        chat = await app.get_chat(chat_target)
+        chat = None
+        # 1. Попытка получить чат напрямую
+        try:
+            chat = await app.get_chat(chat_target)
+        except Exception as e:
+            logger.info(f"Прямой поиск чата {chat_target} не удался ({e}). Синхронизируем диалоги...")
+            # 2. Предзагрузка диалогов для наполнения кэша access_hash пиров
+            async for dialog in app.get_dialogs():
+                c = dialog.chat
+                if c.id == chat_target or (c.username and f"@{c.username.lower()}" == str(chat_target).lower()):
+                    chat = c
+                    break
+
+            # 3. Если всё ещё не найден, повторяем get_chat после прогрева кэша
+            if chat is None:
+                chat = await app.get_chat(chat_target)
+
         chat_id = chat.id
         title = getattr(chat, "title", None) or getattr(chat, "first_name", str(chat_id))
         logger.info(f"Чат: {title} (ID: {chat_id})")
@@ -342,13 +362,20 @@ async def main():
 
     except KeyboardInterrupt:
         logger.info("Остановлено пользователем.")
+    except Exception as e:
+        logger.error(f"Не удалось подключиться к чату {chat_target}: {e}")
+        logger.info("Убедитесь, что аккаунт состоит в этой группе/канале, либо укажите @username группы в .env")
     finally:
         save_state(state)
         logger.info(
             f"Сохранено. Итог сессии: {state.get('session_sparks', 0):,} искр "
             f"за {state['total_actions']} действий всего."
         )
-        await app.stop()
+        try:
+            if app.is_connected:
+                await app.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

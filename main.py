@@ -1,8 +1,12 @@
 import asyncio
 import logging
+import pyrogram.utils
 from pyrogram import Client
 from pyrogram.errors import FloodWait, UserIsBlocked, PeerFlood, PeerIdInvalid, UsernameInvalid, RPCError
 import config
+
+# Патч для поддержки 64-битных ID супергрупп и каналов в Telegram (ID > 2147483647)
+pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
 
 # Настройка логирования
 logging.basicConfig(
@@ -59,6 +63,13 @@ async def send_broadcast():
 async def main():
     await app.start()
     logger.info("Юзербот успешно запущен!")
+
+    # Прогрев кэша пиров, чтобы сессия знала все каналы и группы аккаунта
+    try:
+        async for _ in app.get_dialogs(limit=50):
+            pass
+    except Exception:
+        pass
     
     interval_seconds = config.INTERVAL_MINUTES * 60
     logger.info(f"Интервал рассылки: {config.INTERVAL_MINUTES} минут ({interval_seconds} секунд).")
@@ -71,7 +82,11 @@ async def main():
     except asyncio.CancelledError:
         logger.info("Остановка рассылки по запросу.")
     finally:
-        await app.stop()
+        try:
+            if app.is_connected:
+                await app.stop()
+        except Exception:
+            pass
         logger.info("Юзербот остановлен.")
 
 if __name__ == "__main__":

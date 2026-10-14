@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Telegram & Pyrogram Sessions (CRITICAL: NEVER COMMIT)
+*.session
+*.session-journal
+
+# Environment Secrets (CRITICAL: NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+
+# Local farmer state & stats
+farmer_state.json
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Subfolder duplicate / local copies
+/seller/

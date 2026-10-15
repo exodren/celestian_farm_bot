@@ -63,22 +63,47 @@ LEVELS = [
 STATE_FILE = "farmer_state.json"
 
 def load_state() -> dict:
-    """Загружает сохранённое состояние."""
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
-            logger.info(f"Состояние загружено: {state['total_sparks']:,} искр, ур. {state['current_level']}")
-            return state
-        except Exception as e:
-            logger.warning(f"Не удалось загрузить state: {e} — начинаем заново.")
-    return {
+    """Загружает состояние и синхронизирует с настройками .env (CURRENT_SPARKS / CURRENT_LEVEL)."""
+    state = {
         "total_sparks": 0,
         "current_level": 1,
         "next_available": {},   # "idx": timestamp
         "total_actions": 0,
         "session_sparks": 0,
     }
+
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                state.update(saved)
+            logger.info(f"💾 Загружено из файла: {state['total_sparks']:,} искр, ур. {state['current_level']}")
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать {STATE_FILE}: {e} — создаём новый.")
+
+    # Проверяем начальные настройки из .env
+    env_sparks = getattr(config, "CURRENT_SPARKS", 0)
+    env_level = getattr(config, "CURRENT_LEVEL", 0)
+
+    # Если в .env указан уровень, переводим его в соответствующий порог искр
+    if env_level > 0:
+        target_idx = max(0, min(env_level - 1, len(LEVELS) - 1))
+        lvl_sparks = LEVELS[target_idx][2]
+        if lvl_sparks > env_sparks:
+            env_sparks = lvl_sparks
+
+    # Если в .env указано значение больше текущего в файле — обновляем
+    if env_sparks > state["total_sparks"]:
+        state["total_sparks"] = env_sparks
+        state["current_level"] = get_current_level(env_sparks)
+        logger.info(f"✨ Установлены искры из .env: {env_sparks:,} искр (Уровень {state['current_level']})")
+    else:
+        state["current_level"] = get_current_level(state["total_sparks"])
+
+    if state["total_sparks"] == 0:
+        logger.info("ℹ️  Сейчас 0 искр (Ур. 1). Чтобы начать с высокого уровня, укажите CURRENT_SPARKS=... или CURRENT_LEVEL=... в .env")
+
+    return state
 
 def save_state(state: dict):
     """Сохраняет состояние на диск."""
@@ -114,8 +139,6 @@ def get_current_level(total_sparks: int) -> int:
     """Определяет текущий уровень по количеству искр."""
     current = 1
     for lvl, _, threshold, *_ in LEVELS:
-        # НЕ делаем break — проходим все уровни, т.к. пороги растут монотонно
-        # и пропускать нельзя (иначе при gaps в порогах уровень будет неверным)
         if total_sparks >= threshold:
             current = lvl
     return current
@@ -135,13 +158,12 @@ def get_unlocked_actions(total_sparks: int) -> list:
 
 def get_best_action(state: dict) -> tuple | None:
     """
-    Выбирает лучшее следующее действие среди разблокированных.
+    Выбирает следующее действие среди разблокированных.
 
     Стратегия:
-      1. Если есть разблокированные действия БЕЗ кулдауна — выбираем то,
-         которое даёт больше искр в минуту (sparks/cooldown).
-      2. Если все на кулдауне — выбираем то, у которого кулдаун истечёт
-         раньше всего.
+      1. Среди готовых действий выбираем САМОЕ КРУПНОЕ (по уровню и награде).
+         Это позволяет запустить длинные кулдауны первыми, а параллельно запускать мелкие.
+      2. Если все на кулдауне — ждём то, у которого кулдаун истечёт раньше всего.
 
     Возвращает (idx, wait_seconds) или None.
     """
@@ -153,7 +175,6 @@ def get_best_action(state: dict) -> tuple | None:
     if not unlocked:
         return None
 
-    # Разделяем на "готовые сейчас" и "на кулдауне"
     ready = []
     on_cd = []
     for idx in unlocked:
@@ -165,16 +186,13 @@ def get_best_action(state: dict) -> tuple | None:
             on_cd.append((remaining, idx))
 
     if ready:
-        # Из готовых — берём с лучшим соотношением искры/минута
-        def efficiency(idx):
-            lvl, _, _, cmd, label, cooldown, reward = LEVELS[idx]
-            return reward / (cooldown / 60)  # искры в минуту
-
-        best_idx = max(ready, key=efficiency)
+        # Приоритет: САМЫЙ ВЫСОКИЙ УРОВЕНЬ И МАКСИМАЛЬНАЯ НАГРАДА
+        # Сначала запускаем тяжелые действия (например ур.15, ур.10), а мелкие идут следом
+        best_idx = max(ready, key=lambda i: (LEVELS[i][0], LEVELS[i][6]))
         return best_idx, 0.0
 
     if on_cd:
-        # Ждём ближайшее
+        # Ждём действие, чей КД закончится раньше всех
         on_cd.sort()
         wait, best_idx = on_cd[0]
         return best_idx, wait
@@ -182,18 +200,41 @@ def get_best_action(state: dict) -> tuple | None:
     return None
 
 
+def print_brain_dashboard(state: dict):
+    """Отображает в консоли статус внутреннего счётчика всех действий и их кулдаунов."""
+    now = time.time()
+    total_sparks = state["total_sparks"]
+    cur_lvl = state["current_level"]
+    lvl_name = LEVELS[cur_lvl - 1][1]
+    unlocked = get_unlocked_actions(total_sparks)
+
+    logger.info("┌" + "─" * 53 + "┐")
+    logger.info(f"│ 🧠 СЧЁТЧИК: {total_sparks:>9,} искр | Ур. {cur_lvl:<2} ({lvl_name})")
+    if cur_lvl < len(LEVELS):
+        nxt = LEVELS[cur_lvl]
+        rem_sparks = max(0, nxt[2] - total_sparks)
+        logger.info(f"│    До ур. {cur_lvl + 1} ({nxt[1]}): ещё {rem_sparks:,} искр")
+    logger.info("├" + "─" * 53 + "┤")
+    logger.info(f"│ Разблокировано действий: {len(unlocked)} из {len(LEVELS)}")
+    # Показываем разблокированные действия сверху вниз (от самых жирных к мелким)
+    for idx in reversed(unlocked):
+        lvl, _, _, _, label, cd, rew = LEVELS[idx]
+        avail_ts = float(state["next_available"].get(str(idx), 0))
+        rem = avail_ts - now
+        if rem <= 0:
+            status = "✅ ГОТОВО К ОТПРАВКЕ"
+        else:
+            status = f"⏳ КД ещё {format_time(rem)}"
+        logger.info(f"│  • Ур.{lvl:>2} [{label:<14}] +{rew:>5} ✨  {status}")
+    logger.info("└" + "─" * 53 + "┘")
+
+
 async def farm_loop(app: Client, chat_id: int, state: dict):
     """Основной цикл фарминга с учётом уровней."""
     prev_level = state["current_level"]
 
-    logger.info("=" * 55)
-    logger.info("  ОТН-ФАРМЕР  |  умный режим (учёт уровней)")
-    logger.info("=" * 55)
-    logger.info(f"  Накоплено:  {state['total_sparks']:>12,} искр")
-    logger.info(f"  Уровень:    {prev_level:>12}")
-    unlocked_count = len(get_unlocked_actions(state["total_sparks"]))
-    logger.info(f"  Доступно действий: {unlocked_count} из {len(LEVELS)}")
-    logger.info("=" * 55)
+    # Выводим сводку внутреннего счётчика всех действий
+    print_brain_dashboard(state)
 
     while True:
         result = get_best_action(state)

@@ -9,6 +9,10 @@ INTERVAL_MINUTES = float(os.getenv("INTERVAL_MINUTES", "15"))
 TARGETS_RAW = os.getenv("TARGETS", "")
 MESSAGE_TEXT = os.getenv("MESSAGE_TEXT", "Хеллоу! Это тестовое сообщение.")
 
+# Начальное количество искр или уровень (для farmer.py)
+CURRENT_SPARKS = int(os.getenv("CURRENT_SPARKS", "0"))
+CURRENT_LEVEL = int(os.getenv("CURRENT_LEVEL", "0"))
+
 if not API_ID or not API_HASH:
     raise ValueError("Ошибка: API_ID и API_HASH должны быть указаны в файле .env!")
 

@@ -92,8 +92,12 @@ def load_state() -> dict:
         if lvl_sparks > env_sparks:
             env_sparks = lvl_sparks
 
-    # Если в .env указано значение больше текущего в файле — обновляем
-    if env_sparks > state["total_sparks"]:
+    # Применяем .env один раз после каждого его изменения (в т.ч. если значение меньше).
+    # Если .env не менялся — сохраняем накопленный в файле прогресс.
+    env_key = [config.CURRENT_SPARKS, config.CURRENT_LEVEL]
+    env_changed = env_key != state.get("env_applied")
+    state["env_applied"] = env_key
+    if env_sparks > 0 and env_changed:
         state["total_sparks"] = env_sparks
         state["current_level"] = get_current_level(env_sparks)
         logger.info(f"✨ Установлены искры из .env: {env_sparks:,} искр (Уровень {state['current_level']})")

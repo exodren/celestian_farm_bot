@@ -160,44 +160,18 @@ def get_best_action(state: dict) -> tuple | None:
     """
     Выбирает следующее действие среди разблокированных.
 
-    Стратегия:
-      1. Среди готовых действий выбираем САМОЕ КРУПНОЕ (по уровню и награде).
-         Это позволяет запустить длинные кулдауны первыми, а параллельно запускать мелкие.
-      2. Если все на кулдауне — ждём то, у которого кулдаун истечёт раньше всего.
+    Стратегия: отправляем ТОЛЬКО команду самого высокого разблокированного уровня.
+    Мелкие команды не используются. При левел-апе автоматически переключаемся на новую.
 
     Возвращает (idx, wait_seconds) или None.
     """
-    total_sparks = state["total_sparks"]
-    next_avail = state["next_available"]
-    now = time.time()
-
-    unlocked = get_unlocked_actions(total_sparks)
+    unlocked = get_unlocked_actions(state["total_sparks"])
     if not unlocked:
         return None
 
-    ready = []
-    on_cd = []
-    for idx in unlocked:
-        avail_at = float(next_avail.get(str(idx), 0))
-        remaining = avail_at - now
-        if remaining <= 0:
-            ready.append(idx)
-        else:
-            on_cd.append((remaining, idx))
-
-    if ready:
-        # Приоритет: САМЫЙ ВЫСОКИЙ УРОВЕНЬ И МАКСИМАЛЬНАЯ НАГРАДА
-        # Сначала запускаем тяжелые действия (например ур.15, ур.10), а мелкие идут следом
-        best_idx = max(ready, key=lambda i: (LEVELS[i][0], LEVELS[i][6]))
-        return best_idx, 0.0
-
-    if on_cd:
-        # Ждём действие, чей КД закончится раньше всех
-        on_cd.sort()
-        wait, best_idx = on_cd[0]
-        return best_idx, wait
-
-    return None
+    best_idx = max(unlocked, key=lambda i: (LEVELS[i][0], LEVELS[i][6]))
+    avail_at = float(state["next_available"].get(str(best_idx), 0))
+    return best_idx, max(0.0, avail_at - time.time())
 
 
 def print_brain_dashboard(state: dict):
@@ -206,7 +180,6 @@ def print_brain_dashboard(state: dict):
     total_sparks = state["total_sparks"]
     cur_lvl = state["current_level"]
     lvl_name = LEVELS[cur_lvl - 1][1]
-    unlocked = get_unlocked_actions(total_sparks)
 
     logger.info("┌" + "─" * 53 + "┐")
     logger.info(f"│ 🧠 СЧЁТЧИК: {total_sparks:>9,} искр | Ур. {cur_lvl:<2} ({lvl_name})")
@@ -215,10 +188,11 @@ def print_brain_dashboard(state: dict):
         rem_sparks = max(0, nxt[2] - total_sparks)
         logger.info(f"│    До ур. {cur_lvl + 1} ({nxt[1]}): ещё {rem_sparks:,} искр")
     logger.info("├" + "─" * 53 + "┤")
-    logger.info(f"│ Разблокировано действий: {len(unlocked)} из {len(LEVELS)}")
-    # Показываем разблокированные действия сверху вниз (от самых жирных к мелким)
-    for idx in reversed(unlocked):
+    best = get_best_action(state)
+    if best:
+        idx = best[0]
         lvl, _, _, _, label, cd, rew = LEVELS[idx]
+        logger.info("│ Активная команда:")
         avail_ts = float(state["next_available"].get(str(idx), 0))
         rem = avail_ts - now
         if rem <= 0:
@@ -250,7 +224,7 @@ async def farm_loop(app: Client, chat_id: int, state: dict):
         if wait > 0:
             available_at = datetime.now() + timedelta(seconds=wait)
             logger.info(
-                f"[КД] Все действия на кулдауне. Ждём [{label}] "
+                f"[КД] Ждём [{label}] (ур.{lvl}) "
                 f"ещё {format_time(wait)} (в {available_at.strftime('%H:%M:%S')})"
             )
             while True:

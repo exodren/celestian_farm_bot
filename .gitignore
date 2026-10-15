@@ -29,6 +29,7 @@ farmer_state.json
 # IDE & OS
 .vscode/
 .idea/
+.obsidian/
 *.swp
 *.swo
 .DS_Store
